@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  echo-server-test:
+    image: mendhak/http-https-echo:35
+    environment:
+      HTTP_PORT: 3000
+
+  nginx-sidecar:
+    container_name: nginx-sidecar
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NGINX_LOGS_INCLUDE_STATUS_CODE_REGEX: $NGINX_LOGS_INCLUDE_STATUS_CODE_REGEX
+      NGINX_LOGS_INCLUDE_QUERY_PARAMS: $NGINX_LOGS_INCLUDE_QUERY_PARAMS
+      NGINX_PORT: 3001
+      APP_PORT: 3000
+      NGINX_STATUS_ALLOW_FROM: all
+      APP_HOST: echo-server-test
+    ports:
+      - 3001:3001
+    depends_on:
+      - echo-server-test

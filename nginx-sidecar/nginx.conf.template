@@ -1,0 +1,138 @@
+# A single worker is enough for load balancing and reverse proxing.
+# While disk I/O can block an nginx worker, it's possible to enable
+# async read and send for static files.
+#
+worker_processes 1;
+
+# The limit on the maximum number of open files for worker processes.
+# This overrides the OS limit for the user the workers run as:
+#   ulimit -a | grep 'open files'
+#
+# This value must be equal or higher than the worker_connections value.
+#
+worker_rlimit_nofile 4096;
+
+# Log to stdout.
+# Use the stdout of init on Docker to get the logs to the log drain.
+#
+error_log /proc/1/fd/1 warn;
+
+pid /var/run/nginx.pid;
+
+
+events {
+  # The maximum number of simultaneous connections that can be
+  # opened by a worker process. This limit is shared between
+  # client connections and upstream connections.
+  #
+  worker_connections 4096;
+
+  # "on" if nginx worker_processes > 1
+  #
+  accept_mutex off;
+}
+
+
+http {
+  server_tokens off;
+
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  log_format  main  '[nginx] method=$request_method path=$<NGINX_LOGS_PATH_PARAM> '
+                    'status=$status upstream_status=$upstream_status duration=$request_time size=$body_bytes_sent '
+                    '"$remote_user" "$http_referer" "$http_user_agent"';
+
+  # Conditional logging.
+  # To disable set a regex over the status code.
+  # For example `^[45]` log requests with a 4xx and 5xx status code only.
+  # The default is to match all status codes and log everything.
+  #
+  map $status $loggable {
+    ~<NGINX_LOGS_INCLUDE_STATUS_CODE_REGEX> 1;
+    default 0;
+  }
+
+  # Log to stdout.
+  # Use the stdout of init on Docker to get the logs to the log drain.
+  #
+  access_log /proc/1/fd/1 main if=$loggable;
+
+  tcp_nodelay on;
+
+  keepalive_timeout <NGINX_KEEPALIVE_TIMEOUT>;
+
+  gzip on;
+  gzip_http_version 1.0;
+  gzip_proxied any;
+  gzip_vary on;
+  gzip_min_length 500;
+  gzip_disable "MSIE [1-6]\.";
+  gzip_types text/plain text/xml text/css
+             text/comma-separated-values
+             text/javascript application/x-javascript
+             application/javascript application/json
+             application/atom+xml;
+
+  # timeout settings when proxying request to a server upstream
+  # nginx default values for these can be high for your app needs so it is configurable
+  proxy_connect_timeout <PROXY_TIMEOUT>;
+  proxy_send_timeout <PROXY_TIMEOUT>;
+  proxy_read_timeout <PROXY_TIMEOUT>;
+
+  # According to the HTTP standard, headers with underscores are perfectly valid.
+  # However, nginx defaults to dropping headers containing underscores, as they
+  # might introduce ambiguities when mapping headers to CGI variables.
+  #
+  underscores_in_headers on;
+
+  map $http_x_forwarded_proto $thescheme {
+      default $scheme;
+      https https;
+  }
+
+  server {
+    listen <NGINX_PORT> deferred;
+
+    client_body_buffer_size <CLIENT_BODY_BUFFER_SIZE>;
+    client_max_body_size <NGINX_CLIENT_MAX_BODY_SIZE>;
+    large_client_header_buffers <NGINX_LARGE_CLIENT_HEADER_BUFFERS>;
+
+    location / {
+      proxy_pass_request_headers on;
+
+      # For NewRelic, time in milliseconds
+      proxy_set_header X-Request-Start "t=${msec}";
+      proxy_set_header X-Queue-Start "t=${msec}";
+
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $thescheme;
+      proxy_set_header X-Real-IP $remote_addr;
+
+      # Pass the original host name through, this is important if downstream
+      # uses host based routing
+      proxy_set_header Host $host;
+
+      proxy_redirect off; # disable nginx redirect-rewrite logic
+      proxy_pass http://<APP_HOST>:<APP_PORT>;
+
+      # The size of the buffer that stores the response headers
+      proxy_buffer_size 8k;
+    }
+  }
+
+  server {
+    listen <NGINX_STATUS_PORT>;
+    server_name localhost;
+
+    access_log off;
+    allow <NGINX_STATUS_ALLOW_FROM>;
+    deny all;
+
+    location /nginx_status {
+      stub_status;
+      # ensures the version information can be retrieved
+      server_tokens on;
+    }
+  }
+}
